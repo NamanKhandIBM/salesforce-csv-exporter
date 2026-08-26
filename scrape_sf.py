@@ -500,17 +500,35 @@ async def scrape_dashboard(url: str) -> tuple[list, list[list], str]:
 
     print(f"\n[*] Total raw rows: {len(all_records):,}")
 
-    # Deduplicate exact duplicate rows (Wave join-expansion artefact)
-    seen_rows : set = set()
-    deduped   = []
-    for rec in all_records:
-        key = tuple(rec.get(k, "") for k in all_keys)
-        if key not in seen_rows:
-            seen_rows.add(key)
-            deduped.append(rec)
-    if len(deduped) < len(all_records):
-        print(f"[*] Removed {len(all_records) - len(deduped):,} exact duplicate rows "
-              f"→ {len(deduped):,} remaining")
+    # Deduplicate by AccountNumber — the Wave API returns one account joined to
+    # multiple RDC customer/industry records, so the same AccountNumber appears
+    # many times with different RDC.CUST_NAME / RDC.INDUSTRY_NAME values.
+    # Keeping the first occurrence per AccountNumber matches what the dashboard
+    # displays (one row per account).
+    # Fall back to full-row dedup if AccountNumber is not in the result set.
+    acct_key = "AccountNumber"
+    if acct_key in seen_keys:
+        seen_accts : set = set()
+        deduped = []
+        for rec in all_records:
+            a = rec.get(acct_key, "")
+            if a not in seen_accts:
+                seen_accts.add(a)
+                deduped.append(rec)
+        print(f"[*] Deduplicated by AccountNumber: "
+              f"{len(all_records):,} raw rows → {len(deduped):,} unique accounts")
+    else:
+        # No AccountNumber column — fall back to full-row exact dedup
+        seen_rows : set = set()
+        deduped = []
+        for rec in all_records:
+            key = tuple(rec.get(k, "") for k in all_keys)
+            if key not in seen_rows:
+                seen_rows.add(key)
+                deduped.append(rec)
+        if len(deduped) < len(all_records):
+            print(f"[*] Removed {len(all_records) - len(deduped):,} exact duplicate rows "
+                  f"→ {len(deduped):,} remaining")
 
     rows    = [[rec.get(k, "") for k in all_keys] for rec in deduped]
     headers = all_keys

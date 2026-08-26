@@ -335,20 +335,34 @@ async def run():
 
     print(f"\n[*] Total raw rows fetched: {len(all_records):,}")
 
-    # Deduplicate rows that are 100% identical (same values in every column).
-    # This handles join-expanded duplicates the Wave API returns when an account
-    # is linked to multiple related records.  Rows that differ in any column
-    # (e.g. different coverage IDs) are kept as separate rows.
-    seen_rows : set = set()
-    deduped   = []
-    for rec in all_records:
-        key = tuple(rec.get(k, "") for k in all_keys)
-        if key not in seen_rows:
-            seen_rows.add(key)
-            deduped.append(rec)
-
-    if len(deduped) < len(all_records):
-        print(f"[*] Removed {len(all_records) - len(deduped):,} exact duplicate rows → {len(deduped):,} rows remaining")
+    # Deduplicate by AccountNumber — the Wave API returns one account joined to
+    # multiple RDC customer/industry records, so the same AccountNumber appears
+    # many times with different RDC.CUST_NAME / RDC.INDUSTRY_NAME values.
+    # Keeping the first occurrence per AccountNumber matches what the dashboard
+    # displays (one row per account).
+    # Fall back to full-row dedup if AccountNumber is not in the result set.
+    acct_key = "AccountNumber"
+    if acct_key in seen_keys:
+        seen_accts : set = set()
+        deduped = []
+        for rec in all_records:
+            a = rec.get(acct_key, "")
+            if a not in seen_accts:
+                seen_accts.add(a)
+                deduped.append(rec)
+        print(f"[*] Deduplicated by AccountNumber: "
+              f"{len(all_records):,} raw rows → {len(deduped):,} unique accounts")
+    else:
+        seen_rows : set = set()
+        deduped = []
+        for rec in all_records:
+            key = tuple(rec.get(k, "") for k in all_keys)
+            if key not in seen_rows:
+                seen_rows.add(key)
+                deduped.append(rec)
+        if len(deduped) < len(all_records):
+            print(f"[*] Removed {len(all_records) - len(deduped):,} exact duplicate rows "
+                  f"→ {len(deduped):,} rows remaining")
     all_records = deduped
 
     ts        = datetime.now().strftime("%Y%m%d_%H%M%S")
