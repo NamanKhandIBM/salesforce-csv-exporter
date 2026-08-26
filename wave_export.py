@@ -265,12 +265,28 @@ async def run():
                 "metadata": {**cap["metadata"], "queryId": offset},
             })
 
-            resp = await page.request.fetch(
-                endpoint_url,
-                method="POST",
-                headers=cap["req_headers"],
-                data=payload,
-            )
+            # Retry loop — ECONNRESET happens on long pagination runs
+            resp = None
+            for attempt in range(4):
+                try:
+                    resp = await page.request.fetch(
+                        endpoint_url,
+                        method="POST",
+                        headers=cap["req_headers"],
+                        data=payload,
+                    )
+                    break
+                except Exception as e:
+                    if "ECONNRESET" in str(e) or "ECONNREFUSED" in str(e) or "socket" in str(e).lower():
+                        wait = 3 * (attempt + 1)
+                        print(f"[!] Connection reset at offset {offset} (attempt {attempt+1}/4) — retrying in {wait}s …")
+                        await asyncio.sleep(wait)
+                    else:
+                        raise
+            if resp is None:
+                print(f"[!] Could not connect after 4 attempts at offset {offset}. Stopping.")
+                break
+
             resp_body = await resp.body()
 
             # ── auth expired — wait for the browser to re-fire the widget ─────

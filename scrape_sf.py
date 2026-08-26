@@ -437,8 +437,27 @@ async def scrape_dashboard(url: str) -> tuple[list, list[list], str]:
                 "metadata": {**cap["metadata"], "queryId": offset},
             })
 
-            resp      = await page.request.fetch(endpoint_url, method="POST",
-                                                  headers=cap["req_headers"], data=payload)
+            # Wrap fetch in retry loop — ECONNRESET happens on long pagination
+            # runs when the server drops the connection; a short wait + retry fixes it.
+            resp = None
+            for attempt in range(4):
+                try:
+                    resp = await page.request.fetch(
+                        endpoint_url, method="POST",
+                        headers=cap["req_headers"], data=payload,
+                    )
+                    break  # success
+                except Exception as e:
+                    if "ECONNRESET" in str(e) or "ECONNREFUSED" in str(e) or "socket" in str(e).lower():
+                        wait = 3 * (attempt + 1)
+                        print(f"[!] Connection reset at offset {offset} (attempt {attempt+1}/4) — retrying in {wait}s …")
+                        await asyncio.sleep(wait)
+                    else:
+                        raise  # unexpected error — let it bubble up
+            if resp is None:
+                print(f"[!] Could not connect after 4 attempts at offset {offset}. Stopping.")
+                break
+
             resp_body = await resp.body()
 
             # Auth expired — wait for browser to re-fire the widget
