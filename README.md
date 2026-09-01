@@ -17,120 +17,88 @@ There are **two scripts**, one for each type of page:
 
 ## First-time setup (do this once)
 
-You need Python and two small packages installed. This takes about 2 minutes.
-
 ### 1. Check if Python is installed
 
-Open **Terminal** (Mac) or **Command Prompt** (Windows) and type:
+Open **Terminal** and type:
 
-```
+```bash
 python3 --version
 ```
 
 If you see something like `Python 3.11.0` you are good. If you get an error, download Python from [python.org](https://www.python.org/downloads/) and install it.
 
-### 2. Install the required packages
+### 2. Clone the repo
 
-Copy and paste these two commands into Terminal, pressing Enter after each:
-
-```
-pip install playwright
-playwright install chromium
+```bash
+git clone https://github.com/NamanKhandIBM/salesforce-csv-exporter.git
+cd salesforce-csv-exporter
 ```
 
-The second command downloads a small browser — it may take a minute or two. You only need to do this once.
+### 3. Run the setup script (installs everything automatically)
 
-### 3. Download the script
+```bash
+./setup.sh
+```
 
-Save `scrape_sf.py` to a folder on your computer (e.g. your Desktop or Documents).
+This installs `playwright` and downloads the Chromium browser. Takes about a minute. **Only needs to be done once.**
+
+> **Windows users:** run these two commands instead of `./setup.sh`:
+> ```
+> pip3 install playwright
+> playwright install chromium
+> ```
 
 ---
 
 ## How to run it
 
-### Step 1 — Open Terminal in the right folder
+Every time you want to export, open Terminal and run:
 
-**Mac:**  
-Open Terminal, then type `cd ` (with a space), then drag the folder where you saved the script into the Terminal window, and press Enter.
-
-**Windows:**  
-Open the folder where you saved the script, hold Shift and right-click on an empty area, and choose **"Open PowerShell window here"**.
-
-### Step 2 — Run the script
-
-```
+```bash
+cd salesforce-csv-exporter
 python3 scrape_sf.py
 ```
 
-A browser window will open automatically.
+Then follow the prompts:
 
-### Step 3 — Log in
+**Step 1 — Log in**
 
-Log in to Salesforce in the browser window using your IBM w3id credentials (the same way you normally log in). Complete any MFA steps.
+A browser window opens and goes directly to the Salesforce page. If you are not logged in, complete your IBM w3id login. Once you can see the report or dashboard, press **Enter** in Terminal.
 
-Once you can see a Salesforce page, come back to Terminal and **press Enter**.
+**Step 2 — Paste the URL**
 
-### Step 4 — Paste the URL
-
-Go to the report or dashboard you want to export in the browser, copy the URL from the address bar, paste it into Terminal when prompted, and press Enter.
+Go to the report or dashboard you want to export in the browser, copy the full URL from the address bar, and paste it when prompted:
 
 ```
 Paste the Salesforce URL and press Enter:
 > https://ibmsc.lightning.force.com/lightning/r/Report/00OgR000000WWzFUAW/view
 ```
 
-### Step 5 — Wait for it to finish
+**Step 3 — Wait**
 
-For **reports**: the browser will load the report and the script captures the data automatically. Takes a few seconds.
-
-For **dashboards**: the script paginates through all rows — you will see a counter like `2,000 rows fetched … 4,000 rows fetched …`. For large tables (50,000+ rows) this can take a few minutes.
+- **Reports:** the browser loads the report and captures the data automatically. Takes a few seconds.
+- **Dashboards:** the script paginates through all rows — you will see a counter like `2,000 rows fetched … 4,000 rows fetched …`. Large tables (50,000+ rows) may take a few minutes.
 
 If the dashboard has **multiple tables**, the script lists them and asks you to type the number of the one you want.
 
-### Step 6 — Find your CSV
+**Step 4 — Find your CSV**
 
-When it finishes you will see:
+When done you will see something like:
 
 ```
 ✓  88,798 rows × 10 columns → /Users/yourname/Desktop/My_Report_20260825_143022.csv
 ```
 
-The file is on your **Desktop**, named after the report/table with a timestamp.
+The file is on your **Desktop**, named after the report or table with a timestamp.
 
 ---
 
 ## Passing the URL directly (optional shortcut)
 
-Instead of being prompted, you can paste the URL right in the command:
+Instead of being prompted, you can pass the URL straight in the command:
 
-```
+```bash
 python3 scrape_sf.py "https://ibmsc.lightning.force.com/lightning/r/Report/00OgR000000WWzFUAW/view"
-```
-
----
-
-## Troubleshooting
-
-**"No rows captured" / script times out**  
-The report or table did not finish loading. Make sure:
-- The report fully loaded in the browser (you can see the data)
-- You are still logged in
-- If the report has a filter or date prompt, fill it in the browser first, then re-run
-
-**"runReport response not captured" for a report**  
-The URL must be a standard Lightning Report (address bar contains `/lightning/r/Report/`). CRM Analytics dashboards use a different URL — if that's what you have, the script will also handle it automatically.
-
-**Dashboard table not found / 90-second timeout**  
-The table widget may not have loaded yet. Scroll the dashboard so the table is visible in the browser window and re-run.
-
-**Token expired mid-export (HTTP 401/403)**  
-For large dashboard exports, session tokens can expire. The script will print a message asking you to scroll the table in the browser — this triggers a fresh request and the export continues automatically from where it left off.
-
-**"playwright is not installed" error**  
-Run the setup commands again:
-```
-pip install playwright
-playwright install chromium
 ```
 
 ---
@@ -151,12 +119,70 @@ https://ibmsc.lightning.force.com/lightning/page/analytics?wave__assetType=dashb
 
 ---
 
+## Getting updates
+
+When a new version is released, pull the latest changes:
+
+```bash
+cd salesforce-csv-exporter
+git pull
+```
+
+---
+
+## Troubleshooting
+
+**`zsh: command not found: python`**  
+Use `python3` instead of `python` — macOS does not have a `python` command by default.
+
+**`zsh: no matches found: scrape_sf (1).py`**  
+You have a duplicate download with `(1)` in the filename. Run from the cloned repo folder instead:
+```bash
+cd salesforce-csv-exporter
+python3 scrape_sf.py
+```
+
+**"No rows captured" / script times out**  
+The report or table did not finish loading. Make sure:
+- The report fully loaded in the browser (you can see the data)
+- You are still logged in
+- If the report has a filter or date prompt, fill it in the browser first, then re-run
+
+**"runReport response not captured" for a report**  
+The URL must be a standard Lightning Report (address bar contains `/lightning/r/Report/`). CRM Analytics dashboards use a different URL — the script handles both automatically.
+
+**Dashboard table not found / 90-second timeout**  
+The table widget may not have loaded yet. Scroll the dashboard so the table is visible in the browser window and re-run.
+
+**Connection reset mid-export (`ECONNRESET`)**  
+The script automatically retries up to 4 times with a short wait. You will see:
+```
+[!] Connection reset at offset 80000 (attempt 1/4) — retrying in 3s …
+```
+Just let it run — it will recover on its own.
+
+**Token expired mid-export (HTTP 401/403)**  
+For large dashboard exports, session tokens can expire. The script will print:
+```
+[!] HTTP 401 — token expired. Waiting for refresh …
+    Scroll the table in the browser to trigger a new query.
+```
+Scroll the table in the browser — this triggers a fresh request and the export continues automatically.
+
+**`playwright is not installed` error**  
+Run the setup again:
+```bash
+./setup.sh
+```
+
+---
+
 ## Notes
 
-- The CSV is saved to your **Desktop** automatically. You can change the save location with `-o`:
-  ```
+- The CSV is saved to your **Desktop** automatically. Change the save location with `-o`:
+  ```bash
   python3 scrape_sf.py "https://..." -o ~/Documents/my_export.csv
   ```
 - **No credentials are ever stored** — the script uses your existing browser session.
-- The script opens a real browser window so Salesforce sees a normal login. Nothing is automated through the login; you always log in yourself.
-- For dashboards, the Wave API sometimes returns the same account linked to multiple territories/coverage models. The script automatically removes 100%-identical duplicate rows while keeping rows that genuinely differ (e.g. same account in multiple coverage models).
+- The script opens a real browser window. You always log in yourself — nothing is automated through the login.
+- For dashboards, the Wave API sometimes returns the same account linked to multiple territories. The script automatically deduplicates by Account Number so the row count matches what the dashboard shows.
