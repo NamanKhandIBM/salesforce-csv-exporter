@@ -379,9 +379,90 @@ async def scrape_dashboard(url: str) -> tuple[list, list[list], str]:
         print()
         await handle_login(page, url)
 
+        # ── tab detection: if the dashboard has tabs, ask which one ───────────
+        # Give the page a moment to render tabs after login/navigation
+        await page.wait_for_timeout(3000)
+        tab_names = []
+        try:
+            tab_names = await page.evaluate("""
+                () => {
+                    // CRM Analytics tab links sit inside the dashboard nav area.
+                    // They are <a> or <span> elements with a role="tab" or inside
+                    // a nav/tablist, or plain anchor links in the page header.
+                    const selectors = [
+                        '[role="tab"]',
+                        '.slds-tabs_default__item a',
+                        '.tab-nav a',
+                        'nav a',
+                        '.analyticsTabBar a',
+                        '.pageTabBar a',
+                    ];
+                    for (const sel of selectors) {
+                        const els = [...document.querySelectorAll(sel)];
+                        const names = els
+                            .map(e => e.textContent.trim())
+                            .filter(t => t.length > 0 && t.length < 50);
+                        if (names.length > 1) return names;
+                    }
+                    return [];
+                }
+            """)
+        except Exception:
+            tab_names = []
+
+        if tab_names and len(tab_names) > 1:
+            print(f"[*] This dashboard has {len(tab_names)} tabs:")
+            for i, name in enumerate(tab_names, 1):
+                print(f"    [{i}] {name}")
+            print()
+            print("    Which tab has the table you want to export?")
+            print("    (If unsure, try 'Accounts' or the tab that shows a list of rows)")
+            print()
+            while True:
+                raw = await asyncio.get_event_loop().run_in_executor(
+                    None, input, f"    Tab number (1–{len(tab_names)}, or press Enter to stay on current tab) > "
+                )
+                raw = raw.strip()
+                if raw == "":
+                    print("[*] Staying on current tab.")
+                    break
+                if raw.isdigit() and 1 <= int(raw) <= len(tab_names):
+                    chosen_tab = int(raw) - 1
+                    tab_label  = tab_names[chosen_tab]
+                    print(f"[*] Clicking tab: {tab_label} …")
+                    # Click the tab by matching its text in the browser
+                    try:
+                        clicked = await page.evaluate(f"""
+                            () => {{
+                                const selectors = [
+                                    '[role="tab"]',
+                                    '.slds-tabs_default__item a',
+                                    '.tab-nav a',
+                                    'nav a',
+                                    '.analyticsTabBar a',
+                                    '.pageTabBar a',
+                                ];
+                                for (const sel of selectors) {{
+                                    const els = [...document.querySelectorAll(sel)];
+                                    const el  = els.find(e => e.textContent.trim() === {json.dumps(tab_label)});
+                                    if (el) {{ el.click(); return true; }}
+                                }}
+                                return false;
+                            }}
+                        """)
+                        if not clicked:
+                            print(f"[!] Could not click tab '{tab_label}' — continuing anyway.")
+                        else:
+                            # Wait for tab content to load and fire its queries
+                            await page.wait_for_timeout(4000)
+                    except Exception as e:
+                        print(f"[!] Tab click error: {e} — continuing anyway.")
+                    break
+                print(f"    Please enter a number between 1 and {len(tab_names)}, or press Enter.")
+
         print()
         print("[*] Waiting up to 90 s for table widget queries to fire …")
-        print("    (scroll the dashboard to make sure all tables are visible)")
+        print("    (if the table is not visible, scroll it into view in the browser)")
         deadline = asyncio.get_event_loop().time() + 90
         while asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(0.5)
@@ -389,7 +470,7 @@ async def scrape_dashboard(url: str) -> tuple[list, list[list], str]:
                 break
         else:
             print("[!] No Wave table queries intercepted within 90 s.")
-            print("    Make sure you are on the correct dashboard and the table is visible.")
+            print("    Make sure you are on the correct tab and the table is visible.")
             await browser.close()
             sys.exit(1)
 

@@ -79,7 +79,22 @@ Paste the Salesforce URL and press Enter:
 - **Reports:** the browser loads the report and captures the data automatically. Takes a few seconds.
 - **Dashboards:** the script paginates through all rows — you will see a counter like `2,000 rows fetched … 4,000 rows fetched …`. Large tables (50,000+ rows) may take a few minutes.
 
-If the dashboard has **multiple tables**, the script lists them and asks you to type the number of the one you want.
+If the dashboard has **multiple tabs** (e.g. Summary, Accounts, Products), the script detects them automatically and asks which one you want:
+
+```
+[*] This dashboard has 4 tabs:
+    [1] Summary
+    [2] Accounts
+    [3] Products
+    [4] Search for Sellers
+
+    Which tab has the table you want to export?
+    Tab number (1–4, or press Enter to stay on current tab) > 2
+```
+
+Type the number and press Enter — the script clicks the tab and waits for the table to load before exporting.
+
+If the dashboard has **multiple tables on the same tab**, the script lists them and asks you to type the number of the one you want.
 
 **Step 4 — Find your CSV**
 
