@@ -88,6 +88,7 @@ WAVE_PATH    = "/analytics/wave/ui?destPath=%2Fservices%2Fdata%2Fv67.0%2Fwave%2F
 PAGE_SIZE    = 2000  # Wave API maximum rows per request
 
 DEBUG = "--debug" in sys.argv
+SNIFF = "--sniff" in sys.argv
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -760,6 +761,63 @@ async def scrape_listview(url: str) -> tuple[list, list[list], str]:
 
 
 
+
+# ── sniffer (diagnosis tool) ──────────────────────────────────────────────────
+
+async def sniff_requests(url: str) -> None:
+    """
+    Open the page, wait for the user to load whatever they want,
+    then print every unique XHR/fetch API URL seen — grouped by path prefix.
+    Use this to discover which API endpoint a page type uses.
+    """
+    seen: dict[str, int] = {}   # path → count
+
+    def on_request(req: Request):
+        if req.resource_type not in ("xhr", "fetch"):
+            return
+        # Strip query string for grouping, keep it for display
+        parsed = urlparse(req.url)
+        key = parsed.scheme + "://" + parsed.netloc + parsed.path
+        seen[req.url] = seen.get(req.url, 0) + 1
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)
+        context = await browser.new_context()
+        page    = await context.new_page()
+        page.on("request", on_request)
+
+        print()
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("  Sniff mode — API request inspector")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        await handle_login(page, url)
+
+        print()
+        print("[*] Scroll and interact with the page so all requests fire.")
+        print("    Press Enter again when ready to see the results.")
+        print()
+        await asyncio.get_event_loop().run_in_executor(None, input)
+
+        await browser.close()
+
+    print()
+    print("─" * 70)
+    print("  API requests captured (XHR/fetch only):")
+    print("─" * 70)
+    # Sort by path so related endpoints group together
+    for full_url in sorted(seen.keys()):
+        parsed = urlparse(full_url)
+        path_and_query = parsed.path + ("?" + parsed.query[:80] if parsed.query else "")
+        print(f"  {path_and_query}")
+    print("─" * 70)
+    print(f"  Total unique requests: {len(seen)}")
+    print()
+    print("  Paste the output above into the chat so the right endpoint")
+    print("  can be added to the scraper.")
+    print()
+
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def main():
@@ -772,6 +830,8 @@ def main():
     parser.add_argument("-o", "--output",
                         help="Output CSV path (default: auto-named file on your Desktop)")
     parser.add_argument("--debug", action="store_true", help="Print raw API snippets")
+    parser.add_argument("--sniff", action="store_true",
+                        help="Open the page and print all API requests fired — use to diagnose unrecognised pages")
     args = parser.parse_args()
 
     url = args.url
@@ -780,6 +840,10 @@ def main():
     if not url:
         print("No URL provided. Exiting.")
         sys.exit(1)
+
+    if SNIFF:
+        asyncio.run(sniff_requests(url))
+        sys.exit(0)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
