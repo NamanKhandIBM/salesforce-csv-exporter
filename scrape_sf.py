@@ -655,19 +655,22 @@ async def scrape_listview(url: str) -> tuple[list, list[list], str]:
             data = json.loads(body)
         except Exception:
             return
-        rv = _aura_listview_rv(data)
-        if rv is None:
+        parsed = _parse_listview_response(data)
+        if parsed is None:
+            if DEBUG:
+                # Print the raw shape so we can diagnose unknown variants
+                try:
+                    preview = json.dumps(data)[:400]
+                except Exception:
+                    preview = str(data)[:400]
+                print(f"  [debug] unrecognised listview response shape: {preview}")
             return
-        records_block = rv.get("records", {})
-        raw_records   = records_block.get("records", [])
-        if not isinstance(raw_records, list):
-            return
-        captured["first_records"] = raw_records
-        captured["next_token"]    = records_block.get("nextPageToken")
-        captured["total_count"]   = rv.get("count", "?")
+        captured["first_records"] = parsed["records"]
+        captured["next_token"]    = parsed["next_token"]
+        captured["total_count"]   = parsed["total_count"]
         if DEBUG:
-            print(f"  [debug] first page: {len(raw_records)} records, "
-                  f"nextPageToken={captured['next_token']!r}")
+            print(f"  [debug] first page: {len(parsed['records'])} records, "
+                  f"nextPageToken={parsed['next_token']!r}")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
@@ -763,22 +766,18 @@ async def scrape_listview(url: str) -> tuple[list, list[list], str]:
             except Exception:
                 break
 
-            rv          = _aura_listview_rv(data)
-            if rv is None:
-                break
-            records_block = rv.get("records", {})
-            raw_records   = records_block.get("records", [])
-            if not raw_records:
+            parsed = _parse_listview_response(data)
+            if parsed is None or not parsed["records"]:
                 break
 
-            page_keys, page_rows = parse_records(raw_records)
+            page_keys, page_rows = parse_records(parsed["records"])
             for k in page_keys:
                 if k not in seen_keys:
                     all_keys.append(k)
                     seen_keys.add(k)
             all_records.extend(page_rows)
             print(f"    {len(all_records):,} rows fetched …")
-            next_token = records_block.get("nextPageToken")
+            next_token = parsed["next_token"]
 
         print("[*] Last page received.")
         await browser.close()
@@ -793,17 +792,42 @@ async def scrape_listview(url: str) -> tuple[list, list[list], str]:
     return headers, rows, title
 
 
-def _aura_listview_rv(data: dict) -> dict | None:
+def _parse_listview_response(data: dict) -> dict | None:
     """
-    Extract the returnValue from a postListRecordsByName Aura response.
-    Returns None if the shape doesn't match.
+    Parse a postListRecordsByName Aura response and normalise to:
+      {"records": [...], "next_token": str|None, "total_count": int|"?"}
+
+    Handles two known shapes:
+      Shape A — records nested in a block:
+        returnValue = {"records": {"records": [...], "nextPageToken": ...}, "count": N}
+      Shape B — records as a direct list:
+        returnValue = {"records": [...], "count": N}
+        (nextPageToken absent — single page)
     """
     if not isinstance(data, dict):
         return None
     for action in data.get("actions", []):
         rv = action.get("returnValue")
-        if isinstance(rv, dict) and "records" in rv:
-            return rv
+        if not isinstance(rv, dict) or "records" not in rv:
+            continue
+        rec_val = rv["records"]
+        # Shape A: records is a dict containing a "records" list
+        if isinstance(rec_val, dict):
+            raw  = rec_val.get("records", [])
+            if not isinstance(raw, list):
+                continue
+            return {
+                "records":     raw,
+                "next_token":  rec_val.get("nextPageToken"),
+                "total_count": rv.get("count", "?"),
+            }
+        # Shape B: records is already the list
+        if isinstance(rec_val, list):
+            return {
+                "records":     rec_val,
+                "next_token":  None,   # no pagination token in this shape
+                "total_count": rv.get("count", len(rec_val)),
+            }
     return None
 
 
