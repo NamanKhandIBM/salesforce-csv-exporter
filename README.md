@@ -27,14 +27,50 @@ python3 --version
 
 If you see something like `Python 3.11.0` you are good. If you get an error, download Python from [python.org](https://www.python.org/downloads/) and install it.
 
-### 2. Clone the repo
+### 2. Download the tool
+
+Pick **one** of the two methods below. **Method B (git) is recommended** — it lets you get updates with a single command instead of re-downloading.
+
+---
+
+#### Method A — Download ZIP *(simpler, but you must re-download for every update)*
+
+1. Go to **[github.com/NamanKhandIBM/salesforce-csv-exporter](https://github.com/NamanKhandIBM/salesforce-csv-exporter)**
+2. Click the green **`< > Code`** button → **Download ZIP**
+3. Unzip it — you'll get a folder called `salesforce-csv-exporter`
+4. Open **Terminal**, drag the folder into the Terminal window and press Enter
+
+---
+
+#### Method B — Git clone *(recommended — get updates instantly)*
+
+First check if git is installed:
+
+```bash
+git --version
+```
+
+If you see `git version 2.x.x` you are ready. If not, macOS will prompt you to install it automatically — click Install.
+
+Then clone the repo:
 
 ```bash
 git clone https://github.com/NamanKhandIBM/salesforce-csv-exporter.git
 cd salesforce-csv-exporter
 ```
 
+**Getting future updates** (run this whenever a new version is available):
+
+```bash
+cd salesforce-csv-exporter
+git pull
+```
+
+---
+
 ### 3. Run the setup script (installs everything automatically)
+
+In Terminal, make sure you are inside the `salesforce-csv-exporter` folder, then run:
 
 ```bash
 ./setup.sh
@@ -128,12 +164,14 @@ https://ibmsc.lightning.force.com/lightning/page/analytics?wave__assetType=dashb
 
 ## Getting updates
 
-When a new version is released, pull the latest changes:
+**If you used Method B (git clone):** one command gets the latest version:
 
 ```bash
 cd salesforce-csv-exporter
 git pull
 ```
+
+**If you used Method A (ZIP download):** re-download the ZIP from [github.com/NamanKhandIBM/salesforce-csv-exporter](https://github.com/NamanKhandIBM/salesforce-csv-exporter), unzip it, and replace your old folder. You do not need to re-run setup.
 
 ---
 
