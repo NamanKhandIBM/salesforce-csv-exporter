@@ -610,50 +610,70 @@ async def scrape_dashboard(url: str) -> tuple[list, list[list], str]:
 async def scrape_listview(url: str) -> tuple[list, list[list], str]:
     """
     Open a Lightning List View URL (/lightning/o/Object/list), intercept the
-    UI API list-records response, paginate through all pages, and return
+    Aura postListRecordsByName response, paginate using pageToken, and return
     (headers, rows, title).
 
-    The UI API paginates via pageToken rather than numeric offsets.
-    Each response contains nextPageToken (null when done).
-    """
-    # Extract object name and list name from URL for the output title
-    path_m  = re.search(r"/lightning/o/([^/]+)/list", urlparse(url).path)
-    obj_name = path_m.group(1) if path_m else "ListExport"
-    qs       = parse_qs(urlparse(url).query)
-    filter_name = qs.get("filterName", [obj_name])[0]
-    title    = f"{obj_name}_{filter_name}"
+    Lightning List Views use the Aura action aura.ListUi.postListRecordsByName
+    (POST /aura) rather than the REST UI API.  The response is the standard
+    Aura envelope: {"actions":[{"returnValue": {"records": {...}, "count": N}}]}
 
-    captured: dict = {}   # stores first intercepted response details
+    Pagination uses pageToken strings returned in each response's
+    returnValue.records.nextPageToken field.
+    """
+    # Extract object name and filter name from URL for the output title
+    path_m      = re.search(r"/lightning/o/([^/]+)/list", urlparse(url).path)
+    obj_name    = path_m.group(1) if path_m else "ListExport"
+    qs          = parse_qs(urlparse(url).query)
+    filter_name = qs.get("filterName", [obj_name])[0]
+    title       = f"{obj_name}_{filter_name}"
+
+    captured: dict = {}   # first intercepted postListRecordsByName request+response
+
+    async def on_request(req: Request):
+        """Capture the POST body of the first postListRecordsByName request."""
+        if "postListRecordsByName" not in req.url:
+            return
+        if captured.get("req_body"):   # already have it
+            return
+        try:
+            captured["req_headers"] = dict(req.headers)
+            captured["req_body"]    = req.post_data or ""
+            captured["aura_url"]    = req.url
+            if DEBUG:
+                print(f"  [debug] postListRecordsByName request intercepted")
+        except Exception:
+            pass
 
     async def on_response(resp: Response):
-        if "ui-api/list-records" not in resp.url:
+        """Parse the first postListRecordsByName response to seed pagination."""
+        if "postListRecordsByName" not in resp.url:
             return
-        if resp.status != 200:
-            return
-        if captured:          # already have what we need
+        if captured.get("first_records") is not None:
             return
         try:
             body = await resp.body()
             data = json.loads(body)
         except Exception:
             return
-        records_block = data.get("records", {})
-        if not isinstance(records_block, dict):
+        rv = _aura_listview_rv(data)
+        if rv is None:
             return
-        raw_records = records_block.get("records", [])
-        if not raw_records:
+        records_block = rv.get("records", {})
+        raw_records   = records_block.get("records", [])
+        if not isinstance(raw_records, list):
             return
-        captured["base_url"]       = resp.url          # includes fields= params
-        captured["req_headers"]    = {}                # cookies handled by page.request.fetch
-        captured["next_token"]     = records_block.get("nextPageToken")
-        captured["first_records"]  = raw_records
+        captured["first_records"] = raw_records
+        captured["next_token"]    = records_block.get("nextPageToken")
+        captured["total_count"]   = rv.get("count", "?")
         if DEBUG:
-            print(f"  [debug] list-records intercepted: {resp.url[:120]}")
+            print(f"  [debug] first page: {len(raw_records)} records, "
+                  f"nextPageToken={captured['next_token']!r}")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
         context = await browser.new_context()
         page    = await context.new_page()
+        page.on("request",  on_request)
         page.on("response", on_response)
 
         print()
@@ -665,22 +685,27 @@ async def scrape_listview(url: str) -> tuple[list, list[list], str]:
 
         print()
         print("[*] Waiting up to 60 s for list data to load …")
-        print("    (make sure the list is visible in the browser window)")
-        for _ in range(120):        # 120 × 500 ms = 60 s
+        print("    (make sure the list is fully visible in the browser window)")
+        for _ in range(120):
             await page.wait_for_timeout(500)
-            if captured:
+            if captured.get("first_records") is not None:
                 break
         else:
-            print("[!] Timed out — no ui-api/list-records response captured.")
+            print("[!] Timed out — no postListRecordsByName response captured.")
             print("    • Make sure the URL is a Lightning List View")
             print("      (address bar contains /lightning/o/.../list)")
             print("    • Scroll the list into view and try again")
             await browser.close()
             sys.exit(1)
 
-        # ── paginate ──────────────────────────────────────────────────────────
+        total = captured["total_count"]
+        print(f"[*] List has {total:,} total records — paginating …\n"
+              if isinstance(total, int) else
+              f"[*] Paginating list …\n")
+
+        # ── helpers ───────────────────────────────────────────────────────────
         def parse_records(raw_records: list) -> tuple[list[str], list[dict]]:
-            """Extract column keys and flat row dicts from UI API records."""
+            """Flatten Aura ListUi records into column-keyed dicts."""
             if not raw_records:
                 return [], []
             keys = list(raw_records[0].get("fields", {}).keys())
@@ -689,7 +714,7 @@ async def scrape_listview(url: str) -> tuple[list, list[list], str]:
                 fields = rec.get("fields", {})
                 row = {}
                 for k in keys:
-                    f = fields.get(k, {})
+                    f  = fields.get(k, {})
                     dv = f.get("displayValue")
                     row[k] = str(dv) if dv is not None else (
                         "" if f.get("value") is None else str(f.get("value"))
@@ -701,7 +726,7 @@ async def scrape_listview(url: str) -> tuple[list, list[list], str]:
         seen_keys   : set[str]   = set()
         all_records : list[dict] = []
 
-        # Process the first page that was already intercepted
+        # First page (already captured from the browser load)
         first_keys, first_rows = parse_records(captured["first_records"])
         for k in first_keys:
             if k not in seen_keys:
@@ -710,21 +735,27 @@ async def scrape_listview(url: str) -> tuple[list, list[list], str]:
         all_records.extend(first_rows)
         print(f"    {len(all_records):,} rows fetched …")
 
-        # Strip any existing pageToken from the base URL so we can append cleanly
-        base_url     = re.sub(r"[?&]pageToken=[^&]*", "", captured["base_url"])
-        sep          = "&" if "?" in base_url else "?"
-        next_token   = captured["next_token"]
+        next_token  = captured["next_token"]
+        aura_url    = captured["aura_url"]
+        req_headers = captured["req_headers"]
+        req_body    = captured["req_body"]   # raw Aura POST body string
 
+        # Paginate by replaying the same Aura POST with an updated pageToken
         while next_token:
-            fetch_url = f"{base_url}{sep}pageToken={next_token}"
+            # The Aura POST body is a URL-encoded string containing a JSON
+            # "message" param.  We update the pageToken inside it.
+            new_body = _inject_page_token(req_body, next_token)
             try:
-                resp = await page.request.fetch(fetch_url, method="GET")
+                resp = await page.request.fetch(
+                    aura_url, method="POST",
+                    headers=req_headers, data=new_body,
+                )
             except Exception as e:
                 print(f"[!] Request error: {e} — stopping.")
                 break
 
             if not resp.ok:
-                print(f"[!] HTTP {resp.status} — stopping pagination.")
+                print(f"[!] HTTP {resp.status} at pageToken={next_token!r} — stopping.")
                 break
 
             try:
@@ -732,7 +763,10 @@ async def scrape_listview(url: str) -> tuple[list, list[list], str]:
             except Exception:
                 break
 
-            records_block = data.get("records", {})
+            rv          = _aura_listview_rv(data)
+            if rv is None:
+                break
+            records_block = rv.get("records", {})
             raw_records   = records_block.get("records", [])
             if not raw_records:
                 break
@@ -744,7 +778,6 @@ async def scrape_listview(url: str) -> tuple[list, list[list], str]:
                     seen_keys.add(k)
             all_records.extend(page_rows)
             print(f"    {len(all_records):,} rows fetched …")
-
             next_token = records_block.get("nextPageToken")
 
         print("[*] Last page received.")
@@ -758,6 +791,48 @@ async def scrape_listview(url: str) -> tuple[list, list[list], str]:
     headers = all_keys
     print(f"\n[*] Total: {len(rows):,} rows, {len(headers)} columns")
     return headers, rows, title
+
+
+def _aura_listview_rv(data: dict) -> dict | None:
+    """
+    Extract the returnValue from a postListRecordsByName Aura response.
+    Returns None if the shape doesn't match.
+    """
+    if not isinstance(data, dict):
+        return None
+    for action in data.get("actions", []):
+        rv = action.get("returnValue")
+        if isinstance(rv, dict) and "records" in rv:
+            return rv
+    return None
+
+
+def _inject_page_token(body: str, token: str) -> str:
+    """
+    Replace or insert the pageToken inside the Aura POST body string.
+    The body is URL-encoded and contains a JSON 'message' param with
+    the action params.  We update the pageToken field inside it.
+    """
+    from urllib.parse import unquote, quote
+
+    # Find the message= param, decode it, patch pageToken, re-encode
+    def patch_message(m):
+        raw = unquote(m.group(1))
+        try:
+            msg = json.loads(raw)
+        except Exception:
+            return m.group(0)
+        for action in msg.get("actions", []):
+            params = action.get("params", {})
+            if "pageToken" in params:
+                params["pageToken"] = token
+            elif "pageSize" in params:
+                # pageToken not present yet — add it
+                params["pageToken"] = token
+        return "message=" + quote(json.dumps(msg, separators=(",", ":")))
+
+    patched = re.sub(r"message=([^&]+)", patch_message, body)
+    return patched
 
 
 
