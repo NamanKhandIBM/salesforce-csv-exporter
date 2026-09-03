@@ -238,6 +238,41 @@ def make_saql_template(q: str) -> str:
     return tmpl
 
 
+def saql_summary(q: str) -> str:
+    """
+    Extract a human-readable summary from a SAQL query string:
+      • column names from the first  'q = foreach q generate ...'  clause
+      • row limit from 'q = limit q N'
+
+    Returns a short string like '8 cols  ·  limit 2,000' or '' if unparseable.
+    """
+    parts = []
+
+    # Column names: everything between 'generate' and the next ';'
+    gen_m = re.search(r"q\s*=\s*foreach\s+q\s+generate\s+(.+?);", q, re.DOTALL)
+    if gen_m:
+        raw_cols = gen_m.group(1)
+        # Each projection is either  expr as 'alias'  or  expr as alias  or just  expr
+        aliases = re.findall(r"as\s+['\"]?(\w+)['\"]?", raw_cols, re.IGNORECASE)
+        if aliases:
+            col_count = len(aliases)
+            col_names = ", ".join(aliases[:4])
+            if col_count > 4:
+                col_names += f", … (+{col_count - 4} more)"
+            parts.append(f"{col_count} cols: {col_names}")
+        else:
+            # Fallback: count comma-separated top-level projections
+            col_count = raw_cols.count(",") + 1
+            parts.append(f"~{col_count} cols")
+
+    # Row limit
+    lim_m = re.search(r"q\s*=\s*limit\s+q\s+(\d+)", q)
+    if lim_m:
+        parts.append(f"limit {int(lim_m.group(1)):,}")
+
+    return "  ·  ".join(parts)
+
+
 # ── login helper ──────────────────────────────────────────────────────────────
 
 async def handle_login(page, url: str) -> str:
@@ -246,11 +281,11 @@ async def handle_login(page, url: str) -> str:
       • complete SSO login (if not already logged in)
       • navigate to the exact tab / view / screen they want to export
 
-    After the user presses Enter, we reload whatever page is currently open
-    so the request/response listeners fire on a clean load and catch the data.
+    For dashboards, tabs don't change the URL, so we do NOT reload after the
+    user presses Enter — the request listener is already attached and will
+    catch the queries that fired when the user clicked the tab.
 
-    Returns the final URL (which may differ from the original if the user
-    navigated to a different tab or view).
+    Returns the URL of the page that was opened (used for the Wave endpoint).
     """
     print(f"[1] Opening: {url}")
     print()
@@ -264,12 +299,10 @@ async def handle_login(page, url: str) -> str:
     print("─" * 60, end=" ", flush=True)
     await asyncio.get_event_loop().run_in_executor(None, input)
 
-    # Capture where the user landed, then do a fresh load so listeners fire
-    final_url = page.url
-    print(f"\n[*] Reloading: {final_url}")
-    await page.goto(final_url, wait_until="domcontentloaded", timeout=120_000)
-    await page.wait_for_timeout(5_000)
-    return final_url
+    # Return current URL (for wave_endpoint) but do NOT reload —
+    # reloading would reset the tab back to the default (Summary) view.
+    print()
+    return page.url
 
 
 # ── report scraper ────────────────────────────────────────────────────────────
@@ -405,11 +438,14 @@ async def scrape_dashboard(url: str) -> tuple[list, list[list], str]:
         step_ids = list(captures.keys())
         if len(step_ids) == 1:
             chosen = step_ids[0]
-            print(f"\n[*] Found 1 table widget: {chosen}")
+            summary = saql_summary(captures[chosen]["query_tmpl"])
+            print(f"[*] Found 1 table widget: {chosen}" + (f"  ({summary})" if summary else ""))
         else:
-            print(f"\n[3] Found {len(step_ids)} table widgets on this dashboard:")
+            print(f"\n[*] Found {len(step_ids)} table widgets on this dashboard:")
             for i, sid in enumerate(step_ids, 1):
-                print(f"    [{i}] {sid}")
+                summary = saql_summary(captures[sid]["query_tmpl"])
+                suffix  = f"  ({summary})" if summary else ""
+                print(f"    [{i}] {sid}{suffix}")
             print()
             while True:
                 raw = await asyncio.get_event_loop().run_in_executor(
