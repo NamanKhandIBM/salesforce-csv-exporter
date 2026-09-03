@@ -43,10 +43,11 @@ HOW IT WORKS — REPORTS
 
 HOW IT WORKS — DASHBOARDS
 ──────────────────────────────────────────────────────────────────
-  1. Opens a Chromium browser window on the Salesforce login page.
-  2. You log in — press Enter when done.
-  3. Navigates to the dashboard URL and intercepts all Wave REST API
-     query REQUESTS fired by table widgets (one per widget step).
+  1. Opens a Chromium browser window on the URL you provided.
+  2. A prompt appears in Terminal: navigate to whatever tab or view
+     has the table you want, log in if needed, then press Enter.
+  3. The script reloads the page you landed on and intercepts all
+     Wave REST API query REQUESTS fired by table widgets.
   4. If there are multiple table widgets, lists them — you pick one.
   5. Replays the intercepted query with paginated offsets (2,000 rows
      at a time) until all rows are fetched.
@@ -102,6 +103,9 @@ def is_dashboard_url(url: str) -> bool:
     if asset_type == "dashboard":
         return True
     if "/lightning/page/analytics" in parsed.path and not asset_type:
+        return True
+    # Standalone Wave dashboard URL (e.g. /analytics/wave/dashboard?assetId=...)
+    if "/analytics/wave/dashboard" in parsed.path:
         return True
     return False
 
@@ -236,35 +240,36 @@ def make_saql_template(q: str) -> str:
 
 # ── login helper ──────────────────────────────────────────────────────────────
 
-async def handle_login(page, url: str) -> None:
+async def handle_login(page, url: str) -> str:
     """
-    Go directly to the target URL.  If Salesforce redirects to IBM w3id SSO,
-    wait for the user to finish logging in, then navigate back to the URL so
-    the response/request listeners catch the data on a fresh load.
+    Open the given URL, then pause so the user can:
+      • complete SSO login (if not already logged in)
+      • navigate to the exact tab / view / screen they want to export
+
+    After the user presses Enter, we reload whatever page is currently open
+    so the request/response listeners fire on a clean load and catch the data.
+
+    Returns the final URL (which may differ from the original if the user
+    navigated to a different tab or view).
     """
     print(f"[1] Opening: {url}")
     print()
     await page.goto(url, wait_until="domcontentloaded", timeout=120_000)
 
-    # Detect SSO redirect — any login page will have a password input
-    on_login = False
-    try:
-        on_login = await page.evaluate(
-            "() => !!document.querySelector('input[type=\"password\"]')"
-        )
-    except Exception:
-        pass
+    print("─" * 60)
+    print("  Navigate to the exact page, tab, or view you want to export.")
+    print("  • If you need to log in, do that first.")
+    print("  • Then go to the specific tab / screen that has the table.")
+    print("  When you can see the data you want, press Enter here.")
+    print("─" * 60, end=" ", flush=True)
+    await asyncio.get_event_loop().run_in_executor(None, input)
 
-    if on_login:
-        print("─" * 60)
-        print("  LOGIN REQUIRED")
-        print("  Log in to Salesforce in the browser window.")
-        print("  Once you can see the report / dashboard, press Enter here.")
-        print("─" * 60, end=" ", flush=True)
-        await asyncio.get_event_loop().run_in_executor(None, input)
-        # Navigate to the target URL fresh so listeners catch the data load
-        await page.goto(url, wait_until="domcontentloaded", timeout=120_000)
-        await page.wait_for_timeout(5_000)
+    # Capture where the user landed, then do a fresh load so listeners fire
+    final_url = page.url
+    print(f"\n[*] Reloading: {final_url}")
+    await page.goto(final_url, wait_until="domcontentloaded", timeout=120_000)
+    await page.wait_for_timeout(5_000)
+    return final_url
 
 
 # ── report scraper ────────────────────────────────────────────────────────────
@@ -305,7 +310,7 @@ async def scrape_report(url: str) -> tuple[list, list[list], str]:
         await handle_login(page, url)
 
         print()
-        print(f"[*] Waiting for report data to load (up to 60 s) …")
+        print("[*] Waiting for report data to load (up to 60 s) …")
         print(f"    The report must fully load in the browser window.")
         print()
 
@@ -330,11 +335,12 @@ async def scrape_report(url: str) -> tuple[list, list[list], str]:
 
 async def scrape_dashboard(url: str) -> tuple[list, list[list], str]:
     """
-    Open the dashboard URL, intercept Wave table widget queries, paginate
-    through all rows, and return (headers, rows, step_id).
+    Open the dashboard URL and pause so the user can navigate to the exact
+    tab / view they want.  After they press Enter the page reloads, Wave
+    table widget queries are intercepted, paginated, and returned as
+    (headers, rows, step_id).
 
-    If the dashboard has multiple table widgets, prints a list and asks
-    the user to choose one.
+    If multiple table widgets fire queries, the user picks which one to export.
     """
     captures      : dict[str, dict]         = {}
     refresh_events: dict[str, asyncio.Event] = {}
@@ -377,92 +383,11 @@ async def scrape_dashboard(url: str) -> tuple[list, list[list], str]:
         print("  Salesforce Dashboard → CSV")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print()
-        await handle_login(page, url)
-
-        # ── tab detection: if the dashboard has tabs, ask which one ───────────
-        # Give the page a moment to render tabs after login/navigation
-        await page.wait_for_timeout(3000)
-        tab_names = []
-        try:
-            tab_names = await page.evaluate("""
-                () => {
-                    // CRM Analytics tab links sit inside the dashboard nav area.
-                    // They are <a> or <span> elements with a role="tab" or inside
-                    // a nav/tablist, or plain anchor links in the page header.
-                    const selectors = [
-                        '[role="tab"]',
-                        '.slds-tabs_default__item a',
-                        '.tab-nav a',
-                        'nav a',
-                        '.analyticsTabBar a',
-                        '.pageTabBar a',
-                    ];
-                    for (const sel of selectors) {
-                        const els = [...document.querySelectorAll(sel)];
-                        const names = els
-                            .map(e => e.textContent.trim())
-                            .filter(t => t.length > 0 && t.length < 50);
-                        if (names.length > 1) return names;
-                    }
-                    return [];
-                }
-            """)
-        except Exception:
-            tab_names = []
-
-        if tab_names and len(tab_names) > 1:
-            print(f"[*] This dashboard has {len(tab_names)} tabs:")
-            for i, name in enumerate(tab_names, 1):
-                print(f"    [{i}] {name}")
-            print()
-            print("    Which tab has the table you want to export?")
-            print("    (If unsure, try 'Accounts' or the tab that shows a list of rows)")
-            print()
-            while True:
-                raw = await asyncio.get_event_loop().run_in_executor(
-                    None, input, f"    Tab number (1–{len(tab_names)}, or press Enter to stay on current tab) > "
-                )
-                raw = raw.strip()
-                if raw == "":
-                    print("[*] Staying on current tab.")
-                    break
-                if raw.isdigit() and 1 <= int(raw) <= len(tab_names):
-                    chosen_tab = int(raw) - 1
-                    tab_label  = tab_names[chosen_tab]
-                    print(f"[*] Clicking tab: {tab_label} …")
-                    # Click the tab by matching its text in the browser
-                    try:
-                        clicked = await page.evaluate(f"""
-                            () => {{
-                                const selectors = [
-                                    '[role="tab"]',
-                                    '.slds-tabs_default__item a',
-                                    '.tab-nav a',
-                                    'nav a',
-                                    '.analyticsTabBar a',
-                                    '.pageTabBar a',
-                                ];
-                                for (const sel of selectors) {{
-                                    const els = [...document.querySelectorAll(sel)];
-                                    const el  = els.find(e => e.textContent.trim() === {json.dumps(tab_label)});
-                                    if (el) {{ el.click(); return true; }}
-                                }}
-                                return false;
-                            }}
-                        """)
-                        if not clicked:
-                            print(f"[!] Could not click tab '{tab_label}' — continuing anyway.")
-                        else:
-                            # Wait for tab content to load and fire its queries
-                            await page.wait_for_timeout(4000)
-                    except Exception as e:
-                        print(f"[!] Tab click error: {e} — continuing anyway.")
-                    break
-                print(f"    Please enter a number between 1 and {len(tab_names)}, or press Enter.")
+        final_url = await handle_login(page, url)
 
         print()
         print("[*] Waiting up to 90 s for table widget queries to fire …")
-        print("    (if the table is not visible, scroll it into view in the browser)")
+        print("    (scroll the table into view if it is not already visible)")
         deadline = asyncio.get_event_loop().time() + 90
         while asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(0.5)
@@ -498,7 +423,7 @@ async def scrape_dashboard(url: str) -> tuple[list, list[list], str]:
         print(f"\n[*] Exporting: {chosen}")
         print("[*] Starting paginated fetch …\n")
 
-        endpoint_url     = wave_endpoint(url)
+        endpoint_url     = wave_endpoint(final_url)
         cap              = captures[chosen]
         refresh_ev       = get_event(chosen)
         all_records      : list[dict] = []

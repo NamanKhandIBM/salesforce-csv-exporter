@@ -61,40 +61,32 @@ python3 scrape_sf.py
 
 Then follow the prompts:
 
-**Step 1 — Log in**
+**Step 1 — Paste the URL**
 
-A browser window opens and goes directly to the Salesforce page. If you are not logged in, complete your IBM w3id login. Once you can see the report or dashboard, press **Enter** in Terminal.
-
-**Step 2 — Paste the URL**
-
-Go to the report or dashboard you want to export in the browser, copy the full URL from the address bar, and paste it when prompted:
+Paste the URL of any Salesforce report or dashboard when prompted (or pass it directly on the command line):
 
 ```
 Paste the Salesforce URL and press Enter:
-> https://ibmsc.lightning.force.com/lightning/r/Report/00OgR000000WWzFUAW/view
+> https://ibmsc.my.salesforce.com/analytics/wave/dashboard?assetId=0FKKa0000010wrbOAA&...
 ```
+
+**Step 2 — Navigate to the screen you want**
+
+A browser window opens on the URL you provided. At this point:
+
+- **If you are not logged in** — complete your IBM w3id login first.
+- **Navigate to the exact tab or view that has the data you want.** For example, if the dashboard opens on a Summary tab but you want the Accounts list, click the Accounts tab now.
+
+Once the table you want is visible on screen, press **Enter** in Terminal.
+
+The script will reload that exact page and start capturing the data automatically.
 
 **Step 3 — Wait**
 
 - **Reports:** the browser loads the report and captures the data automatically. Takes a few seconds.
 - **Dashboards:** the script paginates through all rows — you will see a counter like `2,000 rows fetched … 4,000 rows fetched …`. Large tables (50,000+ rows) may take a few minutes.
 
-If the dashboard has **multiple tabs** (e.g. Summary, Accounts, Products), the script detects them automatically and asks which one you want:
-
-```
-[*] This dashboard has 4 tabs:
-    [1] Summary
-    [2] Accounts
-    [3] Products
-    [4] Search for Sellers
-
-    Which tab has the table you want to export?
-    Tab number (1–4, or press Enter to stay on current tab) > 2
-```
-
-Type the number and press Enter — the script clicks the tab and waits for the table to load before exporting.
-
-If the dashboard has **multiple tables on the same tab**, the script lists them and asks you to type the number of the one you want.
+If the dashboard tab has **multiple table widgets**, the script lists them and asks you to type the number of the one you want.
 
 **Step 4 — Find your CSV**
 
