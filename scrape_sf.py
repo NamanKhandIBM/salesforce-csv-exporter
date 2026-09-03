@@ -5,10 +5,12 @@
 ║   Works for ANY report or dashboard — any number of rows/columns ║
 ╚══════════════════════════════════════════════════════════════════╝
 
-Supports two URL types automatically:
-  • Lightning Reports      — intercepts the Aura runReport API response
+Supports three URL types automatically:
+  • Lightning Reports        — intercepts the Aura runReport API response
   • CRM Analytics Dashboards — intercepts Wave REST API query requests
                                and paginates until every row is fetched
+  • Lightning List Views     — intercepts the UI API list-records response
+                               (/lightning/o/Object/list) and paginates
 
 ──────────────────────────────────────────────────────────────────
 FIRST-TIME SETUP  (run once)
@@ -108,6 +110,11 @@ def is_dashboard_url(url: str) -> bool:
     if "/analytics/wave/dashboard" in parsed.path:
         return True
     return False
+
+
+def is_listview_url(url: str) -> bool:
+    """Return True if the URL is a Lightning List View (/lightning/o/*/list)."""
+    return bool(re.search(r"/lightning/o/[^/]+/list\b", urlparse(url).path))
 
 
 def wave_endpoint(url: str) -> str:
@@ -596,6 +603,163 @@ async def scrape_dashboard(url: str) -> tuple[list, list[list], str]:
     return headers, rows, chosen
 
 
+
+# ── list view scraper ─────────────────────────────────────────────────────────
+
+async def scrape_listview(url: str) -> tuple[list, list[list], str]:
+    """
+    Open a Lightning List View URL (/lightning/o/Object/list), intercept the
+    UI API list-records response, paginate through all pages, and return
+    (headers, rows, title).
+
+    The UI API paginates via pageToken rather than numeric offsets.
+    Each response contains nextPageToken (null when done).
+    """
+    # Extract object name and list name from URL for the output title
+    path_m  = re.search(r"/lightning/o/([^/]+)/list", urlparse(url).path)
+    obj_name = path_m.group(1) if path_m else "ListExport"
+    qs       = parse_qs(urlparse(url).query)
+    filter_name = qs.get("filterName", [obj_name])[0]
+    title    = f"{obj_name}_{filter_name}"
+
+    captured: dict = {}   # stores first intercepted response details
+
+    async def on_response(resp: Response):
+        if "ui-api/list-records" not in resp.url:
+            return
+        if resp.status != 200:
+            return
+        if captured:          # already have what we need
+            return
+        try:
+            body = await resp.body()
+            data = json.loads(body)
+        except Exception:
+            return
+        records_block = data.get("records", {})
+        if not isinstance(records_block, dict):
+            return
+        raw_records = records_block.get("records", [])
+        if not raw_records:
+            return
+        captured["base_url"]       = resp.url          # includes fields= params
+        captured["req_headers"]    = {}                # cookies handled by page.request.fetch
+        captured["next_token"]     = records_block.get("nextPageToken")
+        captured["first_records"]  = raw_records
+        if DEBUG:
+            print(f"  [debug] list-records intercepted: {resp.url[:120]}")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)
+        context = await browser.new_context()
+        page    = await context.new_page()
+        page.on("response", on_response)
+
+        print()
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("  Salesforce List View → CSV")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print()
+        await handle_login(page, url)
+
+        print()
+        print("[*] Waiting up to 60 s for list data to load …")
+        print("    (make sure the list is visible in the browser window)")
+        for _ in range(120):        # 120 × 500 ms = 60 s
+            await page.wait_for_timeout(500)
+            if captured:
+                break
+        else:
+            print("[!] Timed out — no ui-api/list-records response captured.")
+            print("    • Make sure the URL is a Lightning List View")
+            print("      (address bar contains /lightning/o/.../list)")
+            print("    • Scroll the list into view and try again")
+            await browser.close()
+            sys.exit(1)
+
+        # ── paginate ──────────────────────────────────────────────────────────
+        def parse_records(raw_records: list) -> tuple[list[str], list[dict]]:
+            """Extract column keys and flat row dicts from UI API records."""
+            if not raw_records:
+                return [], []
+            keys = list(raw_records[0].get("fields", {}).keys())
+            rows = []
+            for rec in raw_records:
+                fields = rec.get("fields", {})
+                row = {}
+                for k in keys:
+                    f = fields.get(k, {})
+                    dv = f.get("displayValue")
+                    row[k] = str(dv) if dv is not None else (
+                        "" if f.get("value") is None else str(f.get("value"))
+                    )
+                rows.append(row)
+            return keys, rows
+
+        all_keys    : list[str]  = []
+        seen_keys   : set[str]   = set()
+        all_records : list[dict] = []
+
+        # Process the first page that was already intercepted
+        first_keys, first_rows = parse_records(captured["first_records"])
+        for k in first_keys:
+            if k not in seen_keys:
+                all_keys.append(k)
+                seen_keys.add(k)
+        all_records.extend(first_rows)
+        print(f"    {len(all_records):,} rows fetched …")
+
+        # Strip any existing pageToken from the base URL so we can append cleanly
+        base_url     = re.sub(r"[?&]pageToken=[^&]*", "", captured["base_url"])
+        sep          = "&" if "?" in base_url else "?"
+        next_token   = captured["next_token"]
+
+        while next_token:
+            fetch_url = f"{base_url}{sep}pageToken={next_token}"
+            try:
+                resp = await page.request.fetch(fetch_url, method="GET")
+            except Exception as e:
+                print(f"[!] Request error: {e} — stopping.")
+                break
+
+            if not resp.ok:
+                print(f"[!] HTTP {resp.status} — stopping pagination.")
+                break
+
+            try:
+                data = json.loads(await resp.body())
+            except Exception:
+                break
+
+            records_block = data.get("records", {})
+            raw_records   = records_block.get("records", [])
+            if not raw_records:
+                break
+
+            page_keys, page_rows = parse_records(raw_records)
+            for k in page_keys:
+                if k not in seen_keys:
+                    all_keys.append(k)
+                    seen_keys.add(k)
+            all_records.extend(page_rows)
+            print(f"    {len(all_records):,} rows fetched …")
+
+            next_token = records_block.get("nextPageToken")
+
+        print("[*] Last page received.")
+        await browser.close()
+
+    if not all_records:
+        print("[!] No rows collected.")
+        sys.exit(1)
+
+    rows    = [[rec.get(k, "") for k in all_keys] for rec in all_records]
+    headers = all_keys
+    print(f"\n[*] Total: {len(rows):,} rows, {len(headers)} columns")
+    return headers, rows, title
+
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def main():
@@ -619,7 +783,9 @@ def main():
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    if is_dashboard_url(url):
+    if is_listview_url(url):
+        headers, rows, title = asyncio.run(scrape_listview(url))
+    elif is_dashboard_url(url):
         headers, rows, title = asyncio.run(scrape_dashboard(url))
     else:
         headers, rows, title = asyncio.run(scrape_report(url))
